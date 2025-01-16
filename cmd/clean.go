@@ -49,7 +49,6 @@ var cleanCmd = &cobra.Command{
 				var confirm string
 				fmt.Printf("Delete %d spreadsheets? (only 'yes' will be accepted): ", len(driveFiles))
 				fmt.Scan(&confirm)
-				// TODO: parallelize w/ pure channels for practice
 				if confirm == "yes" {
 					ch := make(chan error, cleanConfig.Concurrency)
 					for _, id := range ids {

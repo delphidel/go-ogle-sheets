@@ -190,6 +190,7 @@ func copyTemplateIntoSheet(turnoutSourceId string, templateSheetId int64, target
 	return nil
 }
 
+// TODO: it would be fun if this were idempotent by title
 func CreateEmptySpreadsheet(title string) (*sheets.Spreadsheet, error) {
 	log.Printf("Creating empty spreadsheet %s", title)
 	return sheetsService.Spreadsheets.Create(&sheets.Spreadsheet{
