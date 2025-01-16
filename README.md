@@ -2,8 +2,8 @@
 
 #### Purpose
 - Automate the creation of turnout texting spreadsheets for organizing events 
-    - Spend a dozen hours to save <10 minutes a week
-- Currently, requires a fairly specific format of source spreadsheet, but will hopefully be more extensible in the future
+- Spend a dozen hours to save <10 minutes a week
+- Currently, requires a fairly specific format of source spreadsheet, but it will be more extensible in the future
 
 #### Build
 - I don't actually know how `go mod` works, it's new since I learned Go 10 years ago
