@@ -70,9 +70,9 @@ func GenerateAllBatches(config conf.GenerationConfig) error {
 	if len(errs) > 0 {
 		log.Printf("Errors while generating spreadsheets: %v", errors.Join(errs...))
 	}
-	log.Printf("Successfully generated %d spreadsheets!", batches)
+	fmt.Printf("Successfully generated %d spreadsheets!\n", batches)
 	for i := range titles {
-		log.Print(titles[i])
+		fmt.Println(titles[i])
 	}
 	return errors.Join(errs...)
 }
