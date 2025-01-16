@@ -5,27 +5,36 @@ import (
 	"log"
 	"os"
 
+	"errors"
 	"fmt"
+	"go-ogle-sheets/conf"
 	"golang.org/x/oauth2/google"
+	"google.golang.org/api/drive/v3"
 	"google.golang.org/api/option"
 	"google.golang.org/api/sheets/v4"
-	"google.golang.org/api/drive/v3"
-	"go-ogle-sheets/conf"
 	"net/http"
+	"go-ogle-sheets/util"
 )
 
 var sheetsService *sheets.Service
 var driveService *drive.Service
 
 func GenerateAllBatches(config conf.GenerationConfig) error {
+	log.Printf("Gathering source data...")
 	names, numbers, err := getNamesAndNumbers(config.TurnoutSourceId, config.TurnoutReadRange, config.DoTurnoutIdx, config.FirstNameIdx, config.PhoneIdx)
 	if err != nil {
 		log.Printf("Error in GetNamesAndNumbers: %v", err)
 		return err
 	}
+	// Randomize names & numbers
+	randomized := util.ShuffleSlices([][]interface{}{names, numbers})
+	names = randomized[0]
+	numbers = randomized[1]
+
 	batches := calculateBatches(len(names), config.BatchSize, config.LastPageFudgeFactor)
 	titles := make([]string, batches)
 	log.Printf("Generating and filling %d spreadsheets", batches)
+	// TODO: concurrency in this loop
 	for i := range batches {
 		titles[i] = SpreadsheetNameFromDate(config.Date, i+1)
 		spreadsheet, err := CreateEmptySpreadsheet(titles[i])
@@ -34,7 +43,7 @@ func GenerateAllBatches(config conf.GenerationConfig) error {
 			return err
 		}
 
-		_, err = copyTemplateIntoSheet(config.TurnoutSourceId, config.TemplateSheetId, spreadsheet.SpreadsheetId)
+		err = copyTemplateIntoSheet(config.TurnoutSourceId, config.TemplateSheetId, spreadsheet)
 		if err != nil {
 			log.Printf("Error in CopyTemplateIntoSheet: %v", err)
 			return err
@@ -47,7 +56,7 @@ func GenerateAllBatches(config conf.GenerationConfig) error {
 		}
 	}
 	log.Printf("Successfully generated %d spreadsheets!", batches)
-	for i := range(titles) {
+	for i := range titles {
 		log.Print(titles[i])
 	}
 	return nil
@@ -56,11 +65,17 @@ func GenerateAllBatches(config conf.GenerationConfig) error {
 // This is goofy, but I'm just cruising through how go works again
 type DriveFile struct {
 	Name string
-	Id string
+	Id   string
 }
 
-func AllSpreadsheetsByNamePrefix(namePart string) ([]*DriveFile, error) {
-	fileList, err := driveService.Files.List().Q(fmt.Sprintf("mimeType = 'application/vnd.google-apps.spreadsheet' and name contains '%s'", namePart)).Do()
+func AllSpreadsheetsByPartialName(namePart string) ([]*DriveFile, error) {
+	return AllSpreadsheetsByQ(fmt.Sprintf("name contains '%s'", namePart))
+}
+
+func AllSpreadsheetsByQ(q string) ([]*DriveFile, error) {
+	endQ := fmt.Sprintf("mimeType = 'application/vnd.google-apps.spreadsheet' and %s", q)
+	log.Print(endQ)
+	fileList, err := driveService.Files.List().Q(endQ).Do()
 	if err != nil {
 		log.Printf("Error finding spreadsheets by name: %v", err)
 		return nil, err
@@ -98,17 +113,14 @@ func insertBatchIntoSheet(names []interface{}, numbers []interface{}, targetSpre
 		}
 	}
 
-	// TODO: randomize order
-
 	// Create insertValues as slice of columns
 	insertValues := make([][]interface{}, 2)
 	insertValues[0] = names[offset : offset+batchRows]
 	insertValues[1] = numbers[offset : offset+batchRows]
 
 	// Write names and numbers to new sheet
-	// TODO: fix the name of the sheet and then update it here
 	log.Printf("Inserting batch of %d into target table", len(insertValues[0]))
-	valueRange := "Copy of turnout-template!A2:B"
+	valueRange := "Sheet1!A2:B"
 	return sheetsService.Spreadsheets.Values.Update(targetSpreadsheetId, valueRange, &sheets.ValueRange{
 		MajorDimension: "COLUMNS",
 		Range:          valueRange,
@@ -116,13 +128,52 @@ func insertBatchIntoSheet(names []interface{}, numbers []interface{}, targetSpre
 	}).ValueInputOption("RAW").Do()
 }
 
-// TODO: Remove "Sheet1", rename "Copy of Sheet1" to "Sheet1" (or equivalent)
-func copyTemplateIntoSheet(turnoutSourceId string, templateSheetId int64, targetSpreadsheetId string) (*sheets.SheetProperties, error) {
+func copyTemplateIntoSheet(turnoutSourceId string, templateSheetId int64, targetSpreadsheet *sheets.Spreadsheet) error {
 	// Copy template sheet to new sheet
-	log.Print("Copying template into spreadsheet")
-	return sheetsService.Spreadsheets.Sheets.CopyTo(turnoutSourceId, templateSheetId, &sheets.CopySheetToAnotherSpreadsheetRequest{
-		DestinationSpreadsheetId: targetSpreadsheetId,
+	log.Print("Copying template into new spreadsheet")
+	newSheetProperties, err := sheetsService.Spreadsheets.Sheets.CopyTo(turnoutSourceId, templateSheetId, &sheets.CopySheetToAnotherSpreadsheetRequest{
+		DestinationSpreadsheetId: targetSpreadsheet.SpreadsheetId,
 	}).Do()
+	if err != nil {
+		log.Printf("Error copying template into spreadsheet: %v", err)
+		return err
+	}
+
+	// Note: this object is from the past, so it will not reflect the above update
+	// TODO: maybe check this error when it's actually created to avoid this paradox?
+	if len(targetSpreadsheet.Sheets) != 1 {
+		return errors.New(fmt.Sprintf("Brand-new spreadsheet %s should have only one sheet! Got %d", targetSpreadsheet.Properties.Title, len(targetSpreadsheet.Sheets)))
+	}
+	// Delete default empty sheet
+	log.Printf("Removing empty sheet from new spreadsheet")
+	_, err = sheetsService.Spreadsheets.BatchUpdate(targetSpreadsheet.SpreadsheetId, &sheets.BatchUpdateSpreadsheetRequest{
+		Requests: []*sheets.Request{
+			{
+				DeleteSheet: &sheets.DeleteSheetRequest{SheetId: targetSpreadsheet.Sheets[0].Properties.SheetId},
+			},
+		},
+	}).Do()
+	if err != nil {
+		log.Printf("Error removing empty sheet from spreadsheet %s: %v", targetSpreadsheet.Properties.Title, err)
+		return err
+	}
+
+	// Rename copied sheet to 'Sheet1'
+	log.Printf("Renaming new sheet to 'Sheet1'")
+	_, err = sheetsService.Spreadsheets.BatchUpdate(targetSpreadsheet.SpreadsheetId, &sheets.BatchUpdateSpreadsheetRequest{
+		Requests: []*sheets.Request{
+			{
+				UpdateSheetProperties: &sheets.UpdateSheetPropertiesRequest{
+					Fields: fmt.Sprintf("title"),
+					Properties: &sheets.SheetProperties{
+						SheetId: newSheetProperties.SheetId,
+						Title: "Sheet1",
+					},
+				},
+			},
+		},
+	}).Do()
+	return nil
 }
 
 func CreateEmptySpreadsheet(title string) (*sheets.Spreadsheet, error) {
@@ -145,7 +196,6 @@ func calculateBatches(numRows int, batchSize int, lastPageFudgeFactor int) int {
 func getNamesAndNumbers(turnoutSourceId string, turnoutReadRange string, doTurnoutIdx int, firstNameIdx int, phoneIdx int) ([]interface{}, []interface{}, error) {
 	resp, err := sheetsService.Spreadsheets.Values.Get(turnoutSourceId, turnoutReadRange).Do()
 	if err != nil {
-		log.Printf("Unable to retrieve data from spreadsheet: %v", err)
 		return nil, nil, err
 	}
 	// Extract names and phone numbers

@@ -14,5 +14,7 @@ type GenerationConfig struct {
 
 type CleanConfig struct {
 	Date string
+	MatchPattern string
+	Q string
 	Test bool
 }
