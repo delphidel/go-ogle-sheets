@@ -34,32 +34,47 @@ func GenerateAllBatches(config conf.GenerationConfig) error {
 	batches := calculateBatches(len(names), config.BatchSize, config.LastPageFudgeFactor)
 	titles := make([]string, batches)
 	log.Printf("Generating and filling %d spreadsheets", batches)
-	// TODO: concurrency in this loop
+
+	// Concurrently create each batch
+	ch := make(chan error, config.Concurrency)
 	for i := range batches {
-		titles[i] = SpreadsheetNameFromDate(config.Date, i+1)
-		spreadsheet, err := CreateEmptySpreadsheet(titles[i])
-		if err != nil {
-			log.Printf("Error in CreateEmptySpreadsheet: %v", err)
-			return err
-		}
+		go func(ch chan error) {
+			titles[i] = SpreadsheetNameFromDate(config.Date, i+1)
+			spreadsheet, err := CreateEmptySpreadsheet(titles[i])
+			if err != nil {
+				log.Printf("Error in CreateEmptySpreadsheet: %v", err)
+			}
 
-		err = copyTemplateIntoSheet(config.TurnoutSourceId, config.TemplateSheetId, spreadsheet)
-		if err != nil {
-			log.Printf("Error in CopyTemplateIntoSheet: %v", err)
-			return err
-		}
+			err = copyTemplateIntoSheet(config.TurnoutSourceId, config.TemplateSheetId, spreadsheet)
+			if err != nil {
+				log.Printf("Error in CopyTemplateIntoSheet: %v", err)
+			}
 
-		_, err = insertBatchIntoSheet(names, numbers, spreadsheet.SpreadsheetId, i, config.BatchSize, i >= batches-1, config.LastPageFudgeFactor)
-		if err != nil {
-			log.Printf("Error in InsertBatchIntoSheet: %v", err)
-			return err
+			_, err = insertBatchIntoSheet(names, numbers, spreadsheet.SpreadsheetId, i, config.BatchSize, i >= batches-1, config.LastPageFudgeFactor)
+			if err != nil {
+				log.Printf("Error in InsertBatchIntoSheet: %v", err)
+			}
+			ch<-err
+		}(ch)
+	}
+	errs := make([]error, 0, batches)
+	for i := 0; i < batches; i++ {
+		e := <-ch
+		if e != nil {
+			errs = append(errs, e)
 		}
+		if i >= batches { // TODO: this is clumsy
+			close(ch)
+		}
+	}
+	if len(errs) > 0 {
+		log.Printf("Errors while generating spreadsheets: %v", errors.Join(errs...))
 	}
 	log.Printf("Successfully generated %d spreadsheets!", batches)
 	for i := range titles {
 		log.Print(titles[i])
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // This is goofy, but I'm just cruising through how go works again
@@ -74,7 +89,6 @@ func AllSpreadsheetsByPartialName(namePart string) ([]*DriveFile, error) {
 
 func AllSpreadsheetsByQ(q string) ([]*DriveFile, error) {
 	endQ := fmt.Sprintf("mimeType = 'application/vnd.google-apps.spreadsheet' and %s", q)
-	log.Print(endQ)
 	fileList, err := driveService.Files.List().Q(endQ).Do()
 	if err != nil {
 		log.Printf("Error finding spreadsheets by name: %v", err)

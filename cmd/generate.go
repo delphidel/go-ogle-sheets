@@ -50,4 +50,5 @@ func init() {
 	generateCmd.Flags().IntVar(&genConfig.BatchSize, "batch-size", 10, "Number of records per batch (default 10)")
 	generateCmd.Flags().IntVar(&genConfig.LastPageFudgeFactor, "last-page-fudge", 3, "Maximum number of records to append to last batch (default 3)")
 	generateCmd.Flags().StringVarP(&genConfig.TurnoutReadRange, "read-range", "r", "turnout-list!B2:E", "A1-style read range to pull from source spreadsheet")
+	generateCmd.Flags().IntVarP(&genConfig.Concurrency, "concurrency", "c", 6, "Maximum number of simultaneous goroutines for API operations")
 }

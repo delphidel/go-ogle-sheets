@@ -51,12 +51,28 @@ var cleanCmd = &cobra.Command{
 				fmt.Scan(&confirm)
 				// TODO: parallelize w/ pure channels for practice
 				if confirm == "yes" {
-					// TODO: concurrency in this loop
+					ch := make(chan error, cleanConfig.Concurrency)
 					for _, id := range ids {
-						err := api.DeleteSpreadsheet(id)
-						if err != nil {
-							log.Fatalf("Failed to delete spreadsheet %s: %v", id, err)
+						go func(ch chan error) {
+							err := api.DeleteSpreadsheet(id)
+							if err != nil {
+								log.Printf("Error while deleting spreadsheet %s: %v", id, err)
+							}
+							ch<-err
+						}(ch)
+					}
+					errs := make([]error, 0, len(ids))
+					for i := 0; i < len(ids); i++ {
+						e := <-ch
+						if e != nil {
+							errs = append(errs, e)
 						}
+						if i >= len(ids) { // TODO this is clumsy
+							close(ch)
+						}
+					}
+					if len(errs) > 0 {
+						log.Fatalf("Got errors while concurrentl deleting! %v", errs)
 					}
 					fmt.Printf("Deleted %d spreadsheets\n", len(driveFiles))
 				} else {
@@ -78,4 +94,5 @@ func init() {
 
 	cleanCmd.Flags().BoolVarP(&cleanConfig.Test, "test", "t", false, "If passed, only print matching files and do not delete")
 
+	cleanCmd.Flags().IntVarP(&cleanConfig.Concurrency, "concurrency", "c", 6, "Maximum number of simultaneous goroutines for API operations")
 }

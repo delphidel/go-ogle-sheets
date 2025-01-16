@@ -10,6 +10,7 @@ type GenerationConfig struct {
 	PhoneIdx int
 	BatchSize int
 	LastPageFudgeFactor int
+	Concurrency int
 }
 
 type CleanConfig struct {
@@ -17,4 +18,5 @@ type CleanConfig struct {
 	MatchPattern string
 	Q string
 	Test bool
+	Concurrency int
 }
